@@ -105,4 +105,23 @@ describe("EntityDB", () => {
     db.dbPromise = Promise.reject(new Error("fail"));
     await expect(db.insert({ text: "fail" })).rejects.toThrow();
   });
+
+  it("should use a provided transformers module", async () => {
+    const mockPipeline = vi.fn().mockResolvedValue(async () => ({ data: [0.9, 0.8, 0.7] }));
+    const mockEnv = {};
+    const mockTransformers = { pipeline: mockPipeline, env: mockEnv };
+
+    const dbWithProvided = new EntityDB({
+      vectorPath: "vector",
+      transformers: mockTransformers,
+    });
+
+    const key = await dbWithProvided.insert({ text: "provided" });
+    expect(key).toBe(1);
+    expect(mockPipeline).toHaveBeenCalledWith(
+      "feature-extraction",
+      dbWithProvided.model,
+      expect.objectContaining({ localFilesOnly: true, localModelPath: expect.any(String) })
+    );
+  });
 });

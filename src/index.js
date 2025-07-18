@@ -1,19 +1,10 @@
 import { openDB } from "idb";
-import { pipeline } from "@xenova/transformers";
-import { env } from "@xenova/transformers";
 
 // Specify a custom location for models (defaults to '/models/').
-env.localModelPath = "/huggingface";
-
-// Disable the loading of remote models from the Hugging Face Hub:
-// env.allowRemoteModels = false;
-
-// Set location of .wasm files. Defaults to use a CDN.
-// env.backends.onnx.wasm.wasmPaths = '/path/to/files/';
+const localModelPath = "/huggingface";
 
 // Default pipeline (Xenova/all-MiniLM-L6-v2)
 const defaultModel = "Xenova/all-MiniLM-L6-v2";
-const pipePromise = pipeline("feature-extraction", defaultModel);
 
 // Cosine similarity function
 const cosineSimilarity = (vecA, vecB) => {
@@ -27,7 +18,7 @@ const cosineSimilarity = (vecA, vecB) => {
 };
 
 // Function to get embeddings from text using HuggingFace pipeline
-const getEmbeddingFromText = async (text, model = defaultModel) => {
+const getEmbeddingFromText = async (text, pipePromise, model = defaultModel) => {
   const pipe = await pipePromise;
   const output = await pipe(text, {
     pooling: "mean",
@@ -106,9 +97,26 @@ async function loadWasm() {
 }
 
 class EntityDB {
-  constructor({ vectorPath, model = defaultModel }) {
+  /* by providing transformers as an optional parameter, we  make the library more  flexible about how transformers is provided.
+  * Sometimes the bundlers configurations can not be modified and transformers can not be imported from the package.
+  */
+  constructor({ vectorPath, model = defaultModel, transformers }) {
     this.vectorPath = vectorPath;
     this.model = model;
+    this.transformerPromise = Promise.resolve(transformers || import('@xenova/transformers'));
+    this.pipePromise = this.transformerPromise.then(({ pipeline }) =>
+      pipeline("feature-extraction", this.model, {
+        localFilesOnly: true,
+        localModelPath,
+      })
+    );
+
+    this.envPromise = this.transformerPromise.then(({ env }) => { 
+      env.localModelPath = localModelPath;
+      // env.allowRemoteModels = false; // Disable remote models
+      // env.backends.onnx.wasm.wasmPaths = localModelPath; // Set WASM
+      return env;
+    });
     this.dbPromise = this._initDB();
   }
 
@@ -133,7 +141,7 @@ class EntityDB {
       // Generate embedding if text is provided
       let embedding = data[this.vectorPath];
       if (data.text) {
-        embedding = await getEmbeddingFromText(data.text, this.model);
+        embedding = await getEmbeddingFromText(data.text, this.pipePromise, this.model);
       }
 
       const db = await this.dbPromise;
@@ -151,7 +159,7 @@ class EntityDB {
     try {
       let embedding = data[this.vectorPath];
       if (data.text) {
-        embedding = await getEmbeddingFromText(data.text, this.model);
+        embedding = await getEmbeddingFromText(data.text, this.pipePromise, this.model);
       }
 
       // Binarize the embedding and pack into BigUint64Array
@@ -214,7 +222,7 @@ class EntityDB {
   async query(queryText, { limit = 10 } = {}) {
     try {
       // Get embeddings for the query text
-      const queryVector = await getEmbeddingFromText(queryText, this.model);
+      const queryVector = await getEmbeddingFromText(queryText, this.pipePromise, this.model);
 
       const db = await this.dbPromise;
       const transaction = db.transaction("vectors", "readonly");
@@ -238,7 +246,7 @@ class EntityDB {
   async queryBinary(queryText, { limit = 10 } = {}) {
     try {
       // Get embeddings and binarize them
-      const queryVector = await getEmbeddingFromText(queryText, this.model);
+      const queryVector = await getEmbeddingFromText(queryText, this.pipePromise, this.model);
       const binaryQueryVector = binarizeVector(queryVector);
 
       // Pack the query vector into BigUint64Array
@@ -285,7 +293,7 @@ class EntityDB {
   */
   async queryBinarySIMD(queryText, { limit = 10 } = {}) {
     try {
-      const queryVector = await getEmbeddingFromText(queryText, this.model);
+      const queryVector = await getEmbeddingFromText(queryText, this.pipePromise, this.model);
       const binaryQueryVector = binarizeVector(queryVector);
 
       const packedQueryVector = new BigUint64Array(
